@@ -30,6 +30,11 @@ Shader "Hidden/Roystan/Outline Post Process"
 			float _NormalThreshold;
 			float4x4 _ClipToView;
 
+			float _DepthNormalThreshold;
+			float _DepthNormalThresholdScale;
+
+			float4 _Color;
+
 			// Combines the top and bottom colors using normal blending.
 			// https://en.wikipedia.org/wiki/Blend_modes#Normal_blend_mode
 			// This performs the same operation as Blend SrcAlpha OneMinusSrcAlpha.
@@ -46,12 +51,11 @@ Shader "Hidden/Roystan/Outline Post Process"
 				float4 vertex : SV_POSITION;
 				float2 texcoord : TEXCOORD0;
 				float2 texcoordStereo : TEXCOORD1;
-
-				float3 viewSpaceDir : TEXCOORD2;
-
 			#if STEREO_INSTANCING_ENABLED
 				uint stereoTargetEyeIndex : SV_RenderTargetArrayIndex;
 			#endif
+
+				float3 viewSpaceDir : TEXCOORD2;
 			};
 
 			Varyings Vert(AttributesDefault v)
@@ -74,6 +78,8 @@ Shader "Hidden/Roystan/Outline Post Process"
 
 			float4 Frag(Varyings i) : SV_Target
 			{
+				//return float4(i.viewSpaceDir, 1); // DEBUG
+				
 				float halfScaleFloor = floor(_Scale * 0.5);
 				float halfScaleCeil = ceil(_Scale * 0.5);
 
@@ -81,18 +87,8 @@ Shader "Hidden/Roystan/Outline Post Process"
 				float2 topRightUV = i.texcoord + float2(_MainTex_TexelSize.x, _MainTex_TexelSize.y) * halfScaleCeil;  
 				float2 bottomRightUV = i.texcoord + float2(_MainTex_TexelSize.x * halfScaleCeil, -_MainTex_TexelSize.y * halfScaleFloor);
 				float2 topLeftUV = i.texcoord + float2(-_MainTex_TexelSize.x * halfScaleFloor, _MainTex_TexelSize.y * halfScaleCeil);
-
 				
-				float depth0 = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, bottomLeftUV).r;
-				float depth1 = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, topRightUV).r;
-				float depth2 = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, bottomRightUV).r;
-				float depth3 = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, topLeftUV).r;
-				float depthFiniteDifference0 = depth1 - depth0;
-				float depthFiniteDifference1 = depth3 - depth2;
-				float edgeDepth = sqrt(pow(depthFiniteDifference0, 2) + pow(depthFiniteDifference1, 2)) * 100;
-				float depthThreshold = _DepthThreshold * depth0;
-				edgeDepth = edgeDepth > depthThreshold ? 1 : 0;
-
+				// Calculates normal data
 				float3 normal0 = SAMPLE_TEXTURE2D(_CameraNormalsTexture, sampler_CameraNormalsTexture, bottomLeftUV).rgb;
 				float3 normal1 = SAMPLE_TEXTURE2D(_CameraNormalsTexture, sampler_CameraNormalsTexture, topRightUV).rgb;
 				float3 normal2 = SAMPLE_TEXTURE2D(_CameraNormalsTexture, sampler_CameraNormalsTexture, bottomRightUV).rgb;
@@ -102,13 +98,33 @@ Shader "Hidden/Roystan/Outline Post Process"
 				float edgeNormal = sqrt(dot(normalFiniteDifference0, normalFiniteDifference0) + dot(normalFiniteDifference1, normalFiniteDifference1));
 				edgeNormal = edgeNormal > _NormalThreshold ? 1 : 0;
 				
+				float3 viewNormal = normal0 * 2 - 1;
+				float NdotV = 1 - dot(viewNormal, -i.viewSpaceDir);
+				float normalThreshold01 = saturate((NdotV - _DepthNormalThreshold) / (1 - _DepthNormalThreshold));
+				float normalThreshold = normalThreshold01 * _DepthNormalThresholdScale + 1;
+				
+				// Calculates depth data
+				float depth0 = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, bottomLeftUV).r;
+				float depth1 = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, topRightUV).r;
+				float depth2 = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, bottomRightUV).r;
+				float depth3 = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, sampler_CameraDepthTexture, topLeftUV).r;
+				float depthFiniteDifference0 = depth1 - depth0;
+				float depthFiniteDifference1 = depth3 - depth2;
+				float edgeDepth = sqrt(pow(depthFiniteDifference0, 2) + pow(depthFiniteDifference1, 2)) * 100;
+
+				//float depthThreshold = _DepthThreshold * depth0;
+				float depthThreshold = _DepthThreshold * depth0 * normalThreshold;
+				edgeDepth = edgeDepth > depthThreshold ? 1 : 0;
+
 				float edge = max(edgeDepth, edgeNormal);
-				return edge;
+				//return edge;
 
 
+				float4 edgeColor = float4(_Color.rgb, _Color.a * edge);
 				float4 color = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.texcoord);
 
-				return color;
+				return alphaBlend(edgeColor, color);
+				//return color;
 			}
 			ENDHLSL
 		}
